@@ -14,14 +14,14 @@ use flac_bound::FlacEncoder;
 
 use crate::TrackMetadata;
 
-pub struct FileSink {
+pub struct FileSinkFlac {
     sink: String,
     content: Vec<i32>,
     metadata: Option<TrackMetadata>,
     compression: u32,
 }
 
-impl FileSink {
+impl FileSinkFlac {
     pub fn add_metadata(&mut self, meta: TrackMetadata) {
         self.metadata = Some(meta);
     }
@@ -30,10 +30,10 @@ impl FileSink {
     }
 }
 
-impl Open for FileSink {
+impl Open for FileSinkFlac {
     fn open(path: Option<String>, _audio_format: AudioFormat) -> Self {
         let file_path = path.unwrap_or_else(|| panic!());
-        FileSink {
+        FileSinkFlac {
             sink: file_path,
             content: Vec::new(),
             metadata: None,
@@ -42,7 +42,7 @@ impl Open for FileSink {
     }
 }
 
-impl Sink for FileSink {
+impl Sink for FileSinkFlac {
     fn start(&mut self) -> Result<(), SinkError> {
         Ok(())
     }
@@ -80,7 +80,7 @@ impl Sink for FileSink {
         Ok(())
     }
 
-    fn write(&mut self, packet: &AudioPacket, converter: &mut Converter) -> Result<(), SinkError> {
+    fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> Result<(), SinkError> {
         let data = converter.f64_to_s16(packet.samples().unwrap());
         let mut data32: Vec<i32> = data.iter().map(|el| i32::from(*el)).collect();
         self.content.append(&mut data32);

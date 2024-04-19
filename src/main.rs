@@ -1,4 +1,5 @@
-mod file_sink;
+mod file_sink_flac;
+mod file_sink_mp3;
 
 extern crate rpassword;
 
@@ -9,6 +10,7 @@ use librespot::core::config::SessionConfig;
 use librespot::core::session::Session;
 use librespot::core::spotify_id::SpotifyId;
 use librespot::playback::config::PlayerConfig;
+use librespot::playback::mixer::NoOpVolume;
 use librespot::{core::authentication::Credentials, metadata::Playlist};
 
 use librespot::playback::audio_backend::Open;
@@ -53,6 +55,12 @@ struct Opt {
 8 (slowest, most compression). A value larger than 8 will be Treated as 8. Default is 4."
     )]
     compression: Option<u32>,
+    #[structopt(
+        short = "r",
+        long = "delete-unknown-songs",
+        help = "Delete songs from the destination that are not in the playlist."
+    )]
+    delete_unknown_songs: bool,
 }
 
 #[derive(Clone)]
@@ -65,7 +73,7 @@ pub struct TrackMetadata {
 async fn create_session(credentials: Credentials) -> Session {
     let mut session_config = SessionConfig::default();
     session_config.device_id = machine_uid::get().unwrap();
-    let session = Session::connect(session_config, credentials, None)
+    let (session, _) = Session::connect(session_config, credentials, None, false)
         .await
         .unwrap();
     session
@@ -82,12 +90,28 @@ fn make_filename_compatible(filename: &str) -> String {
     clean
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum Encoding {
+    Flac {
+        compression: Option<u32>
+    },
+    Mp3,
+}
+
+fn extension_from_encoding(encoding: Encoding) -> &'static str {
+    match encoding {
+        Encoding::Flac { .. } => "flac",
+        Encoding::Mp3 => "mp3"
+    }
+}
+
 async fn download_tracks(
     session: &Session,
     destination: PathBuf,
     tracks: Vec<SpotifyId>,
     ordered: bool,
-    compression: Option<u32>,
+    encoding: Encoding,
+    delete_unknown_songs: bool,
 ) {
     let player_config = PlayerConfig::default();
     let bar_style = ProgressStyle::default_bar()
@@ -97,6 +121,7 @@ async fn download_tracks(
     bar.set_style(bar_style);
     bar.enable_steady_tick(500);
 
+    let mut all_files: Vec<String> = vec![];
     for (i, track) in tracks.iter().enumerate() {
         let track_item = Track::get(&session, *track).await.unwrap();
         let artist_name: String;
@@ -127,20 +152,23 @@ async fn download_tracks(
         let full_track_name_clean = make_filename_compatible(full_track_name.as_str());
         //let filename = format!("{}.flac", full_track_name_clean);
         let filename: String;
+        let extension = extension_from_encoding(encoding);
         if ordered {
-            filename = format!("{:03} - {}.flac", i + 1, full_track_name_clean);
+            filename = format!("{:03} - {full_track_name_clean}.{extension}", i + 1);
         } else {
-            filename = format!("{}.flac", full_track_name_clean);
+            filename = format!("{full_track_name_clean}.{extension}");
         }
         let joined_path = destination.join(&filename);
         let path = joined_path.to_str().unwrap();
         bar.set_message(full_track_name_clean.as_str());
 
         let file_name = Path::new(path).file_stem().unwrap().to_str().unwrap();
+        all_files.push(file_name.to_string());
 
         let path_parent = Path::new(path).parent().unwrap();
         let entries = path_parent.read_dir().unwrap();
 
+        // Check if a file with the same name (but not necessarily the same extension) already exists
         let mut file_exists = false;
         for entry in entries {
             let entry = entry.unwrap();
@@ -153,23 +181,40 @@ async fn download_tracks(
         }
 
         if !file_exists {
-            let mut file_sink = file_sink::FileSink::open(
+            let mut file_sink = file_sink_mp3::FileSinkMP3::open( // file_sink_flac::FileSinkFlac::open(
                 Some(path.to_owned()),
                 librespot::playback::config::AudioFormat::S16,
             );
             file_sink.add_metadata(metadata);
-            file_sink.set_compression(compression.unwrap_or(4));
+            match &encoding {
+                Encoding::Flac { compression } => file_sink.set_compression(compression.unwrap_or(4)),
+                _ => {}
+            }
             let (mut player, _) =
-                Player::new(player_config.clone(), session.clone(), None, move || {
+                Player::new(player_config.clone(), session.clone(), Box::new(NoOpVolume), move || {
                     Box::new(file_sink)
                 });
             player.load(*track, true, 0);
             player.await_end_of_track().await;
+            bar.set_message(&format!("{full_track_name_clean} - Encoding..."));
             player.stop();
             bar.inc(1);
         } else {
             // println!("File with the same name already exists, skipping: {}", path);
             bar.inc(1);
+        }
+    }
+
+    dbg!(&all_files);
+    dbg!(&delete_unknown_songs);
+    if delete_unknown_songs {
+        for entry in destination.read_dir().unwrap() {
+            let entry_path = entry.unwrap().path();
+            let file_name = entry_path.file_stem().unwrap().to_str().unwrap();
+            if !all_files.iter().any(|s| s == file_name) {
+                println!("Deleting existing file which is not part of the playlist: {file_name}");
+                std::fs::remove_file(entry_path).unwrap();
+            }
         }
     }
     bar.finish();
@@ -231,7 +276,9 @@ async fn main() {
         PathBuf::from(opt.destination),
         tracks,
         opt.ordered,
-        opt.compression,
+        Encoding::Mp3,
+        // opt.compression,
+        opt.delete_unknown_songs,
     )
     .await;
 }
