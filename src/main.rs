@@ -210,6 +210,14 @@ async fn download_tracks(
     if delete_unknown_songs {
         for entry in destination.read_dir().unwrap() {
             let entry_path = entry.unwrap().path();
+            if (!match entry_path.extension().map(|s| s.to_str().unwrap()) {
+                Some("mp3") | Some("flac") | Some("wav") | Some("ogg") => true,
+                Some(_) => false,
+                None => false,
+            }) {
+                continue;
+            }
+
             let file_name = entry_path.file_stem().unwrap().to_str().unwrap();
             if !all_files.iter().any(|s| s == file_name) {
                 println!("Deleting existing file which is not part of the playlist: {file_name}");
