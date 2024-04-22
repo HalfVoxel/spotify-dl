@@ -205,8 +205,6 @@ async fn download_tracks(
         }
     }
 
-    dbg!(&all_files);
-    dbg!(&delete_unknown_songs);
     if delete_unknown_songs {
         for entry in destination.read_dir().unwrap() {
             let entry_path = entry.unwrap().path();
