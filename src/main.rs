@@ -3,15 +3,15 @@ mod file_sink_mp3;
 
 extern crate rpassword;
 
-use std::path::Path;
-use std::path::PathBuf;
-
+use librespot::core::cache::Cache;
 use librespot::core::config::SessionConfig;
 use librespot::core::session::Session;
 use librespot::core::spotify_id::SpotifyId;
 use librespot::playback::config::PlayerConfig;
 use librespot::playback::mixer::NoOpVolume;
 use librespot::{core::authentication::Credentials, metadata::Playlist};
+use std::path::Path;
+use std::path::PathBuf;
 
 use librespot::playback::audio_backend::Open;
 use librespot::playback::player::Player;
@@ -31,10 +31,12 @@ use indicatif::{ProgressBar, ProgressStyle};
 struct Opt {
     #[structopt(help = "A list of Spotify URIs (songs, podcasts or playlists)")]
     tracks: Vec<String>,
-    #[structopt(short = "u", long = "username", help = "Your Spotify username")]
-    username: String,
-    #[structopt(short = "p", long = "password", help = "Your Spotify password")]
-    password: Option<String>,
+    #[structopt(
+        short = "c",
+        long = "credentials-dir",
+        help = "Your Spotify credentials cache directory"
+    )]
+    credentials_cache: String,
     #[structopt(
         short = "d",
         long = "destination",
@@ -48,13 +50,6 @@ struct Opt {
         help = "Prefixing the filename with its index in the playlist"
     )]
     ordered: bool,
-    #[structopt(
-        short = "c",
-        long = "compression",
-        help = "Setting the flac compression level from 0 (fastest, least compression) to
-8 (slowest, most compression). A value larger than 8 will be Treated as 8. Default is 4."
-    )]
-    compression: Option<u32>,
     #[structopt(
         short = "r",
         long = "delete-unknown-songs",
@@ -70,13 +65,15 @@ pub struct TrackMetadata {
     album: String,
 }
 
-async fn create_session(credentials: Credentials) -> Session {
-    let mut session_config = SessionConfig::default();
-    session_config.device_id = machine_uid::get().unwrap();
-    let (session, _) = Session::connect(session_config, credentials, None, false)
+async fn create_session(
+    session_config: SessionConfig,
+    credentials: Credentials,
+    cache: Option<Cache>,
+) -> Session {
+    let (s, _) = Session::connect(session_config, credentials, cache, false)
         .await
-        .unwrap();
-    session
+        .expect("Failed to connect to Spotify");
+    s
 }
 
 fn make_filename_compatible(filename: &str) -> String {
@@ -92,16 +89,14 @@ fn make_filename_compatible(filename: &str) -> String {
 
 #[derive(Clone, Copy, Debug)]
 pub enum Encoding {
-    Flac {
-        compression: Option<u32>
-    },
+    Flac { compression: Option<u32> },
     Mp3,
 }
 
 fn extension_from_encoding(encoding: Encoding) -> &'static str {
     match encoding {
         Encoding::Flac { .. } => "flac",
-        Encoding::Mp3 => "mp3"
+        Encoding::Mp3 => "mp3",
     }
 }
 
@@ -230,13 +225,9 @@ async fn download_tracks(
 async fn main() {
     let opt = Opt::from_args();
 
-    let username = opt.username;
-    let password = opt
-        .password
-        .unwrap_or_else(|| rpassword::read_password_from_tty(Some("Password: ")).unwrap());
-    let credentials = Credentials::with_password(username, password);
-
-    let session = create_session(credentials.clone()).await;
+    let session_config = SessionConfig::default();
+    let cache = Cache::new(Some(opt.credentials_cache), None, None, None).unwrap();
+    let session = create_session(session_config, cache.credentials().unwrap(), Some(cache)).await;
 
     let mut tracks: Vec<SpotifyId> = Vec::new();
 
